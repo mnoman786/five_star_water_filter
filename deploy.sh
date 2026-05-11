@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # =============================================================================
 # Five Star Water Filter Plant — Ubuntu Server Deploy Script
-# Usage:  sudo bash deploy.sh
+# Usage:  bash deploy.sh   (run as root)
 # =============================================================================
 set -euo pipefail
 
@@ -11,8 +11,7 @@ FE_PORT=3003
 
 # ── Paths ────────────────────────────────────────────────────────────────────
 REPO_URL="https://github.com/mnoman786/five_star_water_filter.git"
-APP_DIR="/opt/fivestar"
-APP_USER="fivestar"
+APP_DIR="/root/fivestar"
 
 # ── Colors ───────────────────────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
@@ -22,7 +21,7 @@ warn()    { echo -e "${YELLOW}[WARN]${NC}  $*"; }
 die()     { echo -e "${RED}[ERROR]${NC} $*" >&2; exit 1; }
 
 # ── Root check ───────────────────────────────────────────────────────────────
-[[ $EUID -ne 0 ]] && die "Run this script as root:  sudo bash deploy.sh"
+[[ $EUID -ne 0 ]] && die "Run this script as root:  bash deploy.sh"
 
 # =============================================================================
 # 1. COLLECT CONFIGURATION
@@ -58,7 +57,6 @@ echo "  Server IP   : $SERVER_IP"
 echo "  Backend     : http://${SERVER_IP}:${BE_PORT}"
 echo "  Frontend    : http://${SERVER_IP}:${FE_PORT}"
 echo "  App dir     : $APP_DIR"
-echo "  App user    : $APP_USER"
 echo ""
 read -rp "Proceed? [Y/n]: " CONFIRM
 [[ "${CONFIRM,,}" == "n" ]] && exit 0
@@ -70,10 +68,7 @@ info "Updating package lists..."
 apt-get update -qq
 
 info "Installing system packages..."
-apt-get install -y -qq \
-    git curl wget build-essential \
-    python3 python3-pip python3-venv \
-    2>/dev/null
+apt-get install -y -qq git curl wget build-essential python3 python3-pip python3-venv 2>/dev/null
 
 # Node.js 20 LTS via NodeSource
 if ! command -v node &>/dev/null || [[ $(node -v | cut -d. -f1 | tr -d 'v') -lt 18 ]]; then
@@ -85,15 +80,7 @@ fi
 success "System dependencies ready. Node $(node -v), Python $(python3 --version)"
 
 # =============================================================================
-# 3. APP USER & DIRECTORY
-# =============================================================================
-if ! id "$APP_USER" &>/dev/null; then
-    info "Creating system user '$APP_USER'..."
-    useradd --system --shell /bin/bash --home "$APP_DIR" --create-home "$APP_USER"
-fi
-
-# =============================================================================
-# 4. CLONE / UPDATE REPOSITORY
+# 3. CLONE / UPDATE REPOSITORY
 # =============================================================================
 if [[ -d "$APP_DIR/.git" ]]; then
     info "Repository exists — pulling latest changes..."
@@ -104,28 +91,22 @@ else
     git clone "$REPO_URL" "$APP_DIR"
 fi
 
-# Ensure app user owns everything
-chown -R "$APP_USER:$APP_USER" "$APP_DIR"
-
 success "Repository ready."
 
 # =============================================================================
-# 5. BACKEND SETUP
+# 4. BACKEND SETUP
 # =============================================================================
 info "Setting up Django backend..."
 
 cd "$APP_DIR/backend"
 
-# Virtual environment
 if [[ ! -d venv ]]; then
-    sudo -u "$APP_USER" python3 -m venv venv
+    python3 -m venv venv
 fi
 
-# Install Python deps
-sudo -u "$APP_USER" venv/bin/pip install --quiet --upgrade pip
-sudo -u "$APP_USER" venv/bin/pip install --quiet -r requirements.txt
+venv/bin/pip install --quiet --upgrade pip
+venv/bin/pip install --quiet -r requirements.txt
 
-# Write .env
 cat > "$APP_DIR/backend/.env" <<EOF
 SECRET_KEY=${SECRET_KEY}
 DEBUG=False
@@ -138,15 +119,12 @@ CORS_ALLOWED_ORIGINS=http://${SERVER_IP}:${FE_PORT}
 ACCESS_TOKEN_LIFETIME_MINUTES=60
 REFRESH_TOKEN_LIFETIME_DAYS=7
 EOF
-chown "$APP_USER:$APP_USER" "$APP_DIR/backend/.env"
 chmod 600 "$APP_DIR/backend/.env"
 
-# Migrations & static files
-sudo -u "$APP_USER" venv/bin/python manage.py migrate --no-input
-sudo -u "$APP_USER" venv/bin/python manage.py collectstatic --no-input --clear -v 0
+venv/bin/python manage.py migrate --no-input
+venv/bin/python manage.py collectstatic --no-input --clear -v 0
 
-# Create superuser (idempotent)
-sudo -u "$APP_USER" venv/bin/python manage.py shell <<PYEOF
+venv/bin/python manage.py shell <<PYEOF
 from apps.users.models import User
 if not User.objects.filter(email='${DJANGO_EMAIL}').exists():
     u = User.objects.create_superuser(
@@ -164,28 +142,25 @@ PYEOF
 success "Backend ready."
 
 # =============================================================================
-# 6. FRONTEND SETUP
+# 5. FRONTEND SETUP
 # =============================================================================
 info "Setting up Next.js frontend..."
 
 cd "$APP_DIR/frontend"
 
-# Write .env.local — frontend talks directly to backend via public IP:port
 cat > "$APP_DIR/frontend/.env.local" <<EOF
 NEXT_PUBLIC_API_URL=http://${SERVER_IP}:${BE_PORT}/api
 NEXT_PUBLIC_WS_URL=ws://${SERVER_IP}:${BE_PORT}
 EOF
-chown "$APP_USER:$APP_USER" "$APP_DIR/frontend/.env.local"
 chmod 600 "$APP_DIR/frontend/.env.local"
 
-# Install & build
-sudo -u "$APP_USER" npm install --silent
-sudo -u "$APP_USER" npm run build
+npm install --silent
+npm run build
 
 success "Frontend ready."
 
 # =============================================================================
-# 7. SYSTEMD SERVICE — BACKEND (daphne)
+# 6. SYSTEMD SERVICE — BACKEND (daphne)
 # =============================================================================
 info "Creating systemd service: fivestar-backend..."
 
@@ -196,7 +171,7 @@ After=network.target
 
 [Service]
 Type=simple
-User=${APP_USER}
+User=root
 WorkingDirectory=${APP_DIR}/backend
 EnvironmentFile=${APP_DIR}/backend/.env
 ExecStart=${APP_DIR}/backend/venv/bin/daphne \
@@ -214,7 +189,7 @@ WantedBy=multi-user.target
 EOF
 
 # =============================================================================
-# 8. SYSTEMD SERVICE — FRONTEND (Next.js)
+# 7. SYSTEMD SERVICE — FRONTEND (Next.js)
 # =============================================================================
 info "Creating systemd service: fivestar-frontend..."
 
@@ -225,7 +200,7 @@ After=network.target fivestar-backend.service
 
 [Service]
 Type=simple
-User=${APP_USER}
+User=root
 WorkingDirectory=${APP_DIR}/frontend
 Environment=NODE_ENV=production
 Environment=PORT=${FE_PORT}
@@ -242,7 +217,7 @@ WantedBy=multi-user.target
 EOF
 
 # =============================================================================
-# 9. OPEN FIREWALL PORTS (ufw)
+# 8. OPEN FIREWALL PORTS (ufw)
 # =============================================================================
 if command -v ufw &>/dev/null && ufw status | grep -q "Status: active"; then
     info "Opening firewall ports ${BE_PORT} and ${FE_PORT}..."
@@ -254,17 +229,15 @@ else
 fi
 
 # =============================================================================
-# 10. ENABLE & START SERVICES
+# 9. ENABLE & START SERVICES
 # =============================================================================
 info "Enabling and starting services..."
 
 systemctl daemon-reload
-
 systemctl enable  fivestar-backend fivestar-frontend
 systemctl restart fivestar-backend
 systemctl restart fivestar-frontend
 
-# Brief wait then status check
 sleep 3
 
 echo ""
@@ -277,18 +250,18 @@ for svc in fivestar-backend fivestar-frontend; do
 done
 
 # =============================================================================
-# 11. DONE
+# 10. DONE
 # =============================================================================
 echo ""
 echo -e "${GREEN}╔══════════════════════════════════════════════════════╗${NC}"
 echo -e "${GREEN}║              Deployment Complete!                    ║${NC}"
 echo -e "${GREEN}╚══════════════════════════════════════════════════════╝${NC}"
 echo ""
-echo -e "  Frontend   : ${CYAN}http://${SERVER_IP}:${FE_PORT}${NC}"
-echo -e "  Backend API: ${CYAN}http://${SERVER_IP}:${BE_PORT}/api/${NC}"
+echo -e "  Frontend    : ${CYAN}http://${SERVER_IP}:${FE_PORT}${NC}"
+echo -e "  Backend API : ${CYAN}http://${SERVER_IP}:${BE_PORT}/api/${NC}"
 echo -e "  Django admin: ${CYAN}http://${SERVER_IP}:${BE_PORT}/admin/${NC}"
 echo ""
-echo -e "  Login with : ${YELLOW}${DJANGO_EMAIL}${NC}"
+echo -e "  Login with  : ${YELLOW}${DJANGO_EMAIL}${NC}"
 echo ""
 echo "  Useful commands:"
 echo "    journalctl -u fivestar-backend  -f   # backend logs"
