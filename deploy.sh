@@ -97,14 +97,15 @@ fi
 # =============================================================================
 if [[ -d "$APP_DIR/.git" ]]; then
     info "Repository exists — pulling latest changes..."
-    sudo -u "$APP_USER" git -C "$APP_DIR" pull --ff-only
+    git -C "$APP_DIR" pull --ff-only
 else
     info "Cloning repository into $APP_DIR..."
     rm -rf "$APP_DIR"
-    mkdir -p "$APP_DIR"
-    chown "$APP_USER:$APP_USER" "$APP_DIR"
-    sudo -u "$APP_USER" git clone "$REPO_URL" "$APP_DIR"
+    git clone "$REPO_URL" "$APP_DIR"
 fi
+
+# Ensure app user owns everything
+chown -R "$APP_USER:$APP_USER" "$APP_DIR"
 
 success "Repository ready."
 
