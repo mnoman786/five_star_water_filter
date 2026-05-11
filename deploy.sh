@@ -33,8 +33,7 @@ echo -e "${CYAN}║   Five Star Water Filter Plant — Server Setup        ║${
 echo -e "${CYAN}╚══════════════════════════════════════════════════════╝${NC}"
 echo ""
 
-read -rp "Server IP (e.g. 192.168.1.10): " SERVER_IP
-[[ -z "$SERVER_IP" ]] && die "Server IP cannot be empty."
+SERVER_IP="162.217.248.75"
 
 read -rp "Django superuser email [admin@fivestar.com]: " DJANGO_EMAIL
 DJANGO_EMAIL="${DJANGO_EMAIL:-admin@fivestar.com}"
