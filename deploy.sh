@@ -101,6 +101,8 @@ if [[ -d "$APP_DIR/.git" ]]; then
 else
     info "Cloning repository into $APP_DIR..."
     rm -rf "$APP_DIR"
+    mkdir -p "$APP_DIR"
+    chown "$APP_USER:$APP_USER" "$APP_DIR"
     sudo -u "$APP_USER" git clone "$REPO_URL" "$APP_DIR"
 fi
 
