@@ -33,8 +33,8 @@ echo -e "${CYAN}║   Five Star Water Filter Plant — Server Setup        ║${
 echo -e "${CYAN}╚══════════════════════════════════════════════════════╝${NC}"
 echo ""
 
-read -rp "Server IP or domain (e.g. 192.168.1.10 or example.com): " SERVER_HOST
-[[ -z "$SERVER_HOST" ]] && die "Server host cannot be empty."
+read -rp "Server IP (e.g. 192.168.1.10): " SERVER_IP
+[[ -z "$SERVER_IP" ]] && die "Server IP cannot be empty."
 
 read -rp "Django superuser email [admin@fivestar.com]: " DJANGO_EMAIL
 DJANGO_EMAIL="${DJANGO_EMAIL:-admin@fivestar.com}"
@@ -55,10 +55,9 @@ SECRET_KEY=$(python3 -c "import secrets,string; print(''.join(secrets.choice(str
 
 echo ""
 info "Configuration summary:"
-echo "  Server host : $SERVER_HOST"
-echo "  Backend     : http://127.0.0.1:${BE_PORT}"
-echo "  Frontend    : http://127.0.0.1:${FE_PORT}"
-echo "  Public URL  : http://${SERVER_HOST}"
+echo "  Server IP   : $SERVER_IP"
+echo "  Backend     : http://${SERVER_IP}:${BE_PORT}"
+echo "  Frontend    : http://${SERVER_IP}:${FE_PORT}"
 echo "  App dir     : $APP_DIR"
 echo "  App user    : $APP_USER"
 echo ""
@@ -75,7 +74,6 @@ info "Installing system packages..."
 apt-get install -y -qq \
     git curl wget build-essential \
     python3 python3-pip python3-venv \
-    nginx \
     2>/dev/null
 
 # Node.js 20 LTS via NodeSource
@@ -103,7 +101,6 @@ if [[ -d "$APP_DIR/.git" ]]; then
     sudo -u "$APP_USER" git -C "$APP_DIR" pull --ff-only
 else
     info "Cloning repository into $APP_DIR..."
-    # Remove dir if it exists but has no .git (e.g. from useradd --create-home)
     rm -rf "$APP_DIR"
     sudo -u "$APP_USER" git clone "$REPO_URL" "$APP_DIR"
 fi
@@ -130,11 +127,11 @@ sudo -u "$APP_USER" venv/bin/pip install --quiet -r requirements.txt
 cat > "$APP_DIR/backend/.env" <<EOF
 SECRET_KEY=${SECRET_KEY}
 DEBUG=False
-ALLOWED_HOSTS=${SERVER_HOST},127.0.0.1,localhost
+ALLOWED_HOSTS=${SERVER_IP},127.0.0.1,localhost
 
 USE_SQLITE=True
 
-CORS_ALLOWED_ORIGINS=http://${SERVER_HOST},http://127.0.0.1:${FE_PORT}
+CORS_ALLOWED_ORIGINS=http://${SERVER_IP}:${FE_PORT}
 
 ACCESS_TOKEN_LIFETIME_MINUTES=60
 REFRESH_TOKEN_LIFETIME_DAYS=7
@@ -171,10 +168,10 @@ info "Setting up Next.js frontend..."
 
 cd "$APP_DIR/frontend"
 
-# Write .env.local
+# Write .env.local — frontend talks directly to backend via public IP:port
 cat > "$APP_DIR/frontend/.env.local" <<EOF
-NEXT_PUBLIC_API_URL=http://${SERVER_HOST}/api
-NEXT_PUBLIC_WS_URL=ws://${SERVER_HOST}
+NEXT_PUBLIC_API_URL=http://${SERVER_IP}:${BE_PORT}/api
+NEXT_PUBLIC_WS_URL=ws://${SERVER_IP}:${BE_PORT}
 EOF
 chown "$APP_USER:$APP_USER" "$APP_DIR/frontend/.env.local"
 chmod 600 "$APP_DIR/frontend/.env.local"
@@ -200,9 +197,9 @@ Type=simple
 User=${APP_USER}
 WorkingDirectory=${APP_DIR}/backend
 EnvironmentFile=${APP_DIR}/backend/.env
-ExecStart=${APP_DIR}/backend/venv/bin/daphne \\
-    -b 127.0.0.1 \\
-    -p ${BE_PORT} \\
+ExecStart=${APP_DIR}/backend/venv/bin/daphne \
+    -b 0.0.0.0 \
+    -p ${BE_PORT} \
     config.asgi:application
 Restart=always
 RestartSec=5
@@ -230,7 +227,7 @@ User=${APP_USER}
 WorkingDirectory=${APP_DIR}/frontend
 Environment=NODE_ENV=production
 Environment=PORT=${FE_PORT}
-Environment=HOSTNAME=127.0.0.1
+Environment=HOSTNAME=0.0.0.0
 ExecStart=/usr/bin/npm run start -- -p ${FE_PORT}
 Restart=always
 RestartSec=5
@@ -243,91 +240,16 @@ WantedBy=multi-user.target
 EOF
 
 # =============================================================================
-# 9. NGINX CONFIGURATION
+# 9. OPEN FIREWALL PORTS (ufw)
 # =============================================================================
-info "Configuring nginx..."
-
-cat > /etc/nginx/sites-available/fivestar <<EOF
-upstream backend {
-    server 127.0.0.1:${BE_PORT};
-}
-
-upstream frontend {
-    server 127.0.0.1:${FE_PORT};
-}
-
-server {
-    listen 80;
-    server_name ${SERVER_HOST};
-
-    client_max_body_size 20M;
-
-    # Django static files
-    location /static/ {
-        alias ${APP_DIR}/backend/staticfiles/;
-        expires 30d;
-        add_header Cache-Control "public, immutable";
-    }
-
-    # Django media files
-    location /media/ {
-        alias ${APP_DIR}/backend/media/;
-        expires 7d;
-    }
-
-    # Django REST API
-    location /api/ {
-        proxy_pass http://backend;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_read_timeout 60s;
-    }
-
-    # Django admin
-    location /admin/ {
-        proxy_pass http://backend;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-    }
-
-    # WebSocket (Django Channels)
-    location /ws/ {
-        proxy_pass http://backend;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_read_timeout 86400s;
-        proxy_send_timeout 86400s;
-    }
-
-    # Next.js frontend (everything else)
-    location / {
-        proxy_pass http://frontend;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        # Next.js HMR websocket (not needed in prod, harmless)
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection "upgrade";
-    }
-}
-EOF
-
-# Enable site
-ln -sf /etc/nginx/sites-available/fivestar /etc/nginx/sites-enabled/fivestar
-rm -f /etc/nginx/sites-enabled/default
-
-nginx -t
-success "Nginx config valid."
+if command -v ufw &>/dev/null && ufw status | grep -q "Status: active"; then
+    info "Opening firewall ports ${BE_PORT} and ${FE_PORT}..."
+    ufw allow "${BE_PORT}/tcp" >/dev/null
+    ufw allow "${FE_PORT}/tcp" >/dev/null
+    success "Firewall ports opened."
+else
+    warn "ufw not active — make sure ports ${BE_PORT} and ${FE_PORT} are open in your firewall/security group."
+fi
 
 # =============================================================================
 # 10. ENABLE & START SERVICES
@@ -336,16 +258,15 @@ info "Enabling and starting services..."
 
 systemctl daemon-reload
 
-systemctl enable  fivestar-backend fivestar-frontend nginx
+systemctl enable  fivestar-backend fivestar-frontend
 systemctl restart fivestar-backend
 systemctl restart fivestar-frontend
-systemctl restart nginx
 
 # Brief wait then status check
 sleep 3
 
 echo ""
-for svc in fivestar-backend fivestar-frontend nginx; do
+for svc in fivestar-backend fivestar-frontend; do
     if systemctl is-active --quiet "$svc"; then
         success "$svc is running"
     else
@@ -361,9 +282,9 @@ echo -e "${GREEN}╔════════════════════
 echo -e "${GREEN}║              Deployment Complete!                    ║${NC}"
 echo -e "${GREEN}╚══════════════════════════════════════════════════════╝${NC}"
 echo ""
-echo -e "  App URL    : ${CYAN}http://${SERVER_HOST}${NC}"
-echo -e "  Admin panel: ${CYAN}http://${SERVER_HOST}/admin/${NC}"
-echo -e "  API        : ${CYAN}http://${SERVER_HOST}/api/${NC}"
+echo -e "  Frontend   : ${CYAN}http://${SERVER_IP}:${FE_PORT}${NC}"
+echo -e "  Backend API: ${CYAN}http://${SERVER_IP}:${BE_PORT}/api/${NC}"
+echo -e "  Django admin: ${CYAN}http://${SERVER_IP}:${BE_PORT}/admin/${NC}"
 echo ""
 echo -e "  Login with : ${YELLOW}${DJANGO_EMAIL}${NC}"
 echo ""
