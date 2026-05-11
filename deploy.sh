@@ -154,7 +154,7 @@ NEXT_PUBLIC_WS_URL=ws://${SERVER_IP}:${BE_PORT}
 EOF
 chmod 600 "$APP_DIR/frontend/.env.local"
 
-npm install --silent
+npm install
 npm run build
 
 success "Frontend ready."
