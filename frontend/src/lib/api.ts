@@ -1,5 +1,6 @@
 import axios, { AxiosInstance, AxiosError, InternalAxiosRequestConfig } from 'axios';
 import { useAuthStore } from '@/store/useAuthStore';
+import { OrderCreateData } from '@/types';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api';
 
@@ -88,7 +89,7 @@ export const ordersApi = {
   list: (params?: Record<string, string | number>) =>
     api.get('/orders/', { params }),
   get: (id: number) => api.get(`/orders/${id}/`),
-  create: (data: Record<string, unknown>) => api.post('/orders/', data),
+  create: (data: OrderCreateData) => api.post('/orders/', data),
   update: (id: number, data: Record<string, unknown>) => api.patch(`/orders/${id}/`, data),
   delete: (id: number) => api.delete(`/orders/${id}/`),
   updateStatus: (id: number, data: { status?: string; payment_status?: string; notes?: string }) =>
